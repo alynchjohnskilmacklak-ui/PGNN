@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Artifacts / generated outputs
+artifacts_127/
+artifacts_debug/
+*.csv
+*.npy
+*.json
+*.pt
+*.png
+
+# Jupyter / Codex
+.codex_tmp_lib/
+codex/
+.ipynb_checkpoints/
