@@ -32,6 +32,15 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "5. Benchmark 对比实验",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/Benchmark.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": ["--n", "100", "--out_dir", "artifacts_127"]
         }
     ]
 }
