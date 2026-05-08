@@ -16,26 +16,45 @@ M_air = 0.0289644
 g0 = 9.80665
 
 
+T_TROPOPAUSE = 216.15
+
+
 def get_atmosphere(current_alt: float, alt_gun: float, T0_K: float, P0_pa: float):
     h_diff = max(0.0, current_alt - alt_gun)
-    T_current = T0_K + L_lapse * h_diff
-    T_current = max(216.15, T_current)
-    exponent = -(g0 * M_air) / (R_gas * L_lapse)
-    P_current = P0_pa * (T_current / T0_K) ** exponent
+
+    if T0_K <= T_TROPOPAUSE:
+        T_current = T_TROPOPAUSE
+        P_current = P0_pa * np.exp(-g0 * M_air * h_diff / (R_gas * T_TROPOPAUSE))
+    else:
+        h_tropopause_from_gun = (T_TROPOPAUSE - T0_K) / L_lapse
+
+        if h_diff <= h_tropopause_from_gun:
+            T_current = T0_K + L_lapse * h_diff
+            exponent = -(g0 * M_air) / (R_gas * L_lapse)
+            P_current = P0_pa * (T_current / T0_K) ** exponent
+        else:
+            T_current = T_TROPOPAUSE
+            exponent = -(g0 * M_air) / (R_gas * L_lapse)
+            P_tropopause = P0_pa * (T_TROPOPAUSE / T0_K) ** exponent
+            h_above = h_diff - h_tropopause_from_gun
+            P_current = P_tropopause * np.exp(-g0 * M_air * h_above / (R_gas * T_TROPOPAUSE))
+
     rho_current = (P_current * M_air) / (R_gas * T_current)
     return rho_current, T_current
 
 
 def calc_dynamic_cd_G7(v_rel: float, T_kelvin: float) -> float:
-    c = 20.05 * np.sqrt(T_kelvin)
-    Ma = v_rel / c
-    if Ma < 0.9:
-        cd = 0.12
-    elif Ma <= 1.2:
-        cd = 0.12 + (Ma - 0.9) * (0.28 / 0.30)
-    else:
-        cd = 0.40 * (1.2 / max(Ma, 1e-12)) ** 0.5
-    return cd
+    c = 20.05 * np.sqrt(max(T_kelvin, 1.0))
+    Ma = v_rel / max(c, 1e-6)
+
+    cd_sub = 0.12
+    cd_trans = 0.12 + (Ma - 0.9) * (0.28 / 0.30)
+    cd_super = 0.40 * (1.2 / max(Ma, 1e-12)) ** 0.5
+
+    w1 = 1.0 / (1.0 + np.exp(-(Ma - 0.9) / 0.03))
+    w2 = 1.0 / (1.0 + np.exp(-(Ma - 1.2) / 0.03))
+
+    return cd_sub * (1.0 - w1) + cd_trans * w1 * (1.0 - w2) + cd_super * w2
 
 
 @dataclass

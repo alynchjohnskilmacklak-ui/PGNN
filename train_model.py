@@ -453,6 +453,17 @@ def _save_history_csv(history: Dict[str, Any], csv_path: str):
             })
 
 
+def _read_ammo_meta(out_dir: str):
+    meta_path = os.path.join(out_dir, "dataset_meta.json")
+    mass, caliber = 0.04828, 0.01295
+    if os.path.exists(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+            mass = float(meta.get("mass_kg", mass))
+            caliber = float(meta.get("caliber_m", caliber))
+    return mass, caliber
+
+
 def _make_adamw(params, lr: float, weight_decay: float, use_fused: bool):
     if use_fused:
         try:
@@ -524,7 +535,11 @@ def train(
     if cfg.trajectory_mode not in (0, 1):
         raise ValueError("trajectory_mode must be 0 (low) or 1 (high).")
 
-    mode_mask = arr[:, 11].astype(np.int32) == int(cfg.trajectory_mode)
+    theta_col = arr[:, -1]
+    if cfg.trajectory_mode == 0:
+        mode_mask = theta_col <= LOW_THETA_MAX
+    else:
+        mode_mask = theta_col >= HIGH_THETA_MIN
     arr = arr[mode_mask]
     mode_name = "low" if cfg.trajectory_mode == 0 else "high"
     print(f"Trajectory mode: {mode_name} ({cfg.trajectory_mode})")
@@ -583,7 +598,8 @@ def train(
         theta_max=theta_max,
     ).to(cfg.device)
     ema = ModelEMA(model, decay=0.999)
-    phys_engine = SmoothPhysicsLoss().to(cfg.device)
+    mass, caliber = _read_ammo_meta(cfg.out_dir)
+    phys_engine = SmoothPhysicsLoss(mass=mass, caliber=caliber).to(cfg.device)
 
     xmin_tensor = torch.tensor(scaler["xmin"], dtype=torch.float32, device=cfg.device)
     span_tensor = torch.tensor(scaler["span"], dtype=torch.float32, device=cfg.device)
