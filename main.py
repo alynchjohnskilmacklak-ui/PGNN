@@ -6,7 +6,7 @@ import pandas as pd
 from generate_dataset import generate_dataset, AMMO_CONFIGS, CURRENT_AMMO
 from train_model import train
 from predict import load_branch_model, solve_target_unified, infer_model_dims_from_state_dict
-from ballistics import ProjectileParams
+from ballistics import ProjectileParams, get_atmosphere, simulate_trajectory, time_and_y_at_x
 
 
 PIPELINE_OUTPUT_FILES = (
@@ -43,57 +43,113 @@ def _remove_pipeline_outputs(out_dir):
     return removed
 
 
-def _verify_unified_model(out_dir, sample_n=700, seed=42):
+def isa_pressure(alt_m: float, P_sea: float = 101325.0) -> float:
+    return P_sea * (1.0 - 2.25577e-5 * alt_m) ** 5.25588
+
+
+def _generate_verify_samples(
+    n_samples: int,
+    base_params: ProjectileParams,
+    seed: int = 99999,
+) -> list:
+    rng = np.random.default_rng(seed)
+    samples = []
+    attempts = 0
+    max_attempts = n_samples * 5
+
+    print(f"[VERIFY] 生成 {n_samples} 个独立测试样本（seed={seed}）...")
+    while len(samples) < n_samples and attempts < max_attempts:
+        attempts += 1
+
+        alt_gun = float(rng.uniform(0.0, 1500.0))
+        T0_C = float(rng.uniform(-20.0, 40.0))
+        P0_Pa = float(isa_pressure(alt_gun) * rng.uniform(0.95, 1.05))
+        wind_x = float(rng.uniform(-15.0, 15.0))
+        wind_y = float(rng.uniform(-3.0, 3.0))
+        wind_z = float(rng.uniform(-12.0, 12.0))
+        cant_angle = float(rng.uniform(-12.0, 12.0))
+        T_powder = T0_C + float(rng.normal(0.0, 5.0))
+        v0_actual = base_params.v0_base + base_params.temp_coeff * (T_powder - 15.0)
+
+        T0_K = T0_C + 273.15
+        rho, _ = get_atmosphere(alt_gun, alt_gun, T0_K, P0_Pa)
+
+        if rng.random() < 0.7:
+            theta = float(rng.uniform(3.0, 45.0))
+        else:
+            theta = float(rng.uniform(50.0, 70.0))
+        alpha = float(rng.uniform(-6.0, 6.0))
+
+        p = ProjectileParams(mass=base_params.mass, caliber=base_params.caliber)
+        p.v0_base = float(v0_actual) - p.temp_coeff * (float(T_powder) - 15.0)
+        p.T_powder_C = float(T_powder)
+        p.wind_x = float(wind_x)
+        p.wind_y = float(wind_y)
+        p.wind_z = float(wind_z)
+        p.cant_angle_deg = float(cant_angle)
+        p.alt_gun = float(alt_gun)
+        p.T0_C = float(T0_C)
+        p.P0_Pa = float(P0_Pa)
+
+        traj = simulate_trajectory(theta_deg=theta, alpha_deg=alpha, params=p, dt=0.01, t_max=200.0)
+        max_x = traj["range"]
+        if max_x < 200.0:
+            continue
+        x_frac = float(rng.uniform(0.30, 0.90))
+        x_target = max_x * x_frac
+        t_hit, y_target, z_target = time_and_y_at_x(traj, x_target)
+        if t_hit is None or y_target is None or y_target < 0.5:
+            continue
+
+        sample_dict = {
+            "x_target": float(x_target),
+            "y_target": float(y_target),
+            "z_target": float(z_target),
+            "v0_actual": float(v0_actual),
+            "rho": float(rho),
+            "wind_x": float(wind_x),
+            "wind_y": float(wind_y),
+            "wind_z": float(wind_z),
+            "cant_angle": float(cant_angle),
+            "T_powder_C": float(T_powder),
+            "alt_gun": float(alt_gun),
+            "T0_C": float(T0_C),
+            "P0_Pa": float(P0_Pa),
+            "true_theta": float(theta),
+            "true_alpha": float(alpha),
+        }
+        samples.append(sample_dict)
+
+    print(f"[VERIFY] 完成 {len(samples)}/{n_samples}（尝试 {attempts} 次）")
+    return samples
+
+
+def _verify_unified_model(out_dir, sample_n=500, seed=99999):
     verify_csv_path = os.path.join(out_dir, "verify_predictions.csv")
     summary_csv_path = os.path.join(out_dir, "verify_summary.csv")
-    csv_path = os.path.join(out_dir, "dataset.csv")
-    if not os.path.exists(csv_path):
-        return {
-            "sample_size": 0,
-            "reachable_count": 0,
-            "angle_mae_theta_deg": float("nan"),
-            "angle_mae_alpha_deg": float("nan"),
-            "verify_csv_path": verify_csv_path,
-            "summary_csv_path": summary_csv_path,
-        }
-
-    df = pd.read_csv(csv_path)
-    if len(df) == 0:
-        return {
-            "sample_size": 0,
-            "reachable_count": 0,
-            "angle_mae_theta_deg": float("nan"),
-            "angle_mae_alpha_deg": float("nan"),
-            "verify_csv_path": verify_csv_path,
-            "summary_csv_path": summary_csv_path,
-        }
-
-    sample_n = min(sample_n, len(df))
-    sample_df = df.sample(n=sample_n, random_state=seed).copy()
 
     low_model_path = os.path.join(out_dir, "dual_model_low.pt")
     low_scaler_path = os.path.join(out_dir, "dual_scaler_low.json")
     high_model_path = os.path.join(out_dir, "dual_model_high.pt")
     high_scaler_path = os.path.join(out_dir, "dual_scaler_high.json")
+    if not all(os.path.exists(p) for p in (low_model_path, low_scaler_path, high_model_path, high_scaler_path)):
+        return {
+            "sample_size": 0, "converged_count": 0, "convergence_rate": 0.0,
+            "err_3d_median": float("nan"), "err_3d_mean": float("nan"), "err_3d_p95": float("nan"),
+            "note": "model files missing",
+        }
+
     low_dims = infer_model_dims_from_state_dict(low_model_path)
     high_dims = infer_model_dims_from_state_dict(high_model_path)
     loaded_low_model, loaded_low_scaler, _ = load_branch_model(
-        low_model_path,
-        low_scaler_path,
-        theta_min=0.0,
-        theta_max=55.0,
-        in_dim=low_dims["in_dim"],
-        hidden=low_dims["hidden"],
-        dropout=low_dims["dropout"],
+        low_model_path, low_scaler_path,
+        theta_min=0.0, theta_max=55.0,
+        in_dim=low_dims["in_dim"], hidden=low_dims["hidden"], dropout=low_dims["dropout"],
     )
     loaded_high_model, loaded_high_scaler, _ = load_branch_model(
-        high_model_path,
-        high_scaler_path,
-        theta_min=45.0,
-        theta_max=85.0,
-        in_dim=high_dims["in_dim"],
-        hidden=high_dims["hidden"],
-        dropout=high_dims["dropout"],
+        high_model_path, high_scaler_path,
+        theta_min=45.0, theta_max=85.0,
+        in_dim=high_dims["in_dim"], hidden=high_dims["hidden"], dropout=high_dims["dropout"],
     )
 
     meta_path = os.path.join(out_dir, "dataset_meta.json")
@@ -111,79 +167,72 @@ def _verify_unified_model(out_dir, sample_n=700, seed=42):
     weapon_params = ProjectileParams(mass=mass_kg, caliber=caliber_m)
     weapon_params.v0_base = v0_base
 
-    preds_theta, trues_theta = [], []
-    preds_alpha, trues_alpha = [], []
-    reachable_count = 0
+    samples = _generate_verify_samples(sample_n, weapon_params, seed=seed)
+    if not samples:
+        return {
+            "sample_size": 0, "converged_count": 0, "convergence_rate": 0.0,
+            "err_3d_median": float("nan"), "err_3d_mean": float("nan"), "err_3d_p95": float("nan"),
+            "note": "no samples generated",
+        }
+
+    errs = []
+    converged_count = 0
     rows = []
 
-    for _, row in sample_df.iterrows():
+    for s in samples:
         out = solve_target_unified(
-            x_target=float(row["x"]),
-            y_target=float(row["y"]),
-            z_target=float(row["z"]),
-            v0_actual=float(row["v0_actual"]),
-            rho=float(row["rho"]),
-            wind_x=float(row["wind_x"]),
-            wind_y=float(row["wind_y"]),
-            wind_z=float(row["wind_z"]),
-            cant_angle=float(row["cant_angle"]),
-            T_powder_C=float(row["T_powder_C"]),
-            alt_gun=float(row["alt_gun"]),
-            T0_C=float(row["T0_C"]),
-            P0_Pa=float(row["P0_Pa"]),
+            x_target=s["x_target"], y_target=s["y_target"], z_target=s["z_target"],
+            v0_actual=s["v0_actual"], rho=s["rho"],
+            wind_x=s["wind_x"], wind_y=s["wind_y"], wind_z=s["wind_z"],
+            cant_angle=s["cant_angle"], T_powder_C=s["T_powder_C"],
+            alt_gun=s["alt_gun"], T0_C=s["T0_C"], P0_Pa=s["P0_Pa"],
             dir_path=out_dir,
-            loaded_low_model=loaded_low_model,
-            loaded_low_scaler=loaded_low_scaler,
-            loaded_high_model=loaded_high_model,
-            loaded_high_scaler=loaded_high_scaler,
+            loaded_low_model=loaded_low_model, loaded_low_scaler=loaded_low_scaler,
+            loaded_high_model=loaded_high_model, loaded_high_scaler=loaded_high_scaler,
             params=weapon_params,
-            y_tol=2.0,
-            z_tol=2.0,
+            y_tol=2.0, z_tol=2.0,
+            use_grid=False,
             save_plot=False,
         )
         chosen = out.get("chosen")
+        err = np.nan if chosen is None else chosen["err_3d"]
+        converged = chosen is not None
+
+        if converged:
+            converged_count += 1
+            errs.append(err)
+
         rows.append({
-            "x": float(row["x"]),
-            "y": float(row["y"]),
-            "z": float(row["z"]),
-            "theta_true_deg": float(row["theta_deg"]),
-            "alpha_true_deg": float(row["alpha_deg"]),
-            "theta_pred_low_deg": float(out["nn_prediction"]["low"]["theta"]),
-            "alpha_pred_low_deg": float(out["nn_prediction"]["low"]["alpha"]),
-            "theta_pred_high_deg": float(out["nn_prediction"]["high"]["theta"]),
-            "alpha_pred_high_deg": float(out["nn_prediction"]["high"]["alpha"]),
-            "chosen_reachable": int(chosen is not None),
+            "x": s["x_target"], "y": s["y_target"], "z": s["z_target"],
+            "theta_true_deg": s["true_theta"], "alpha_true_deg": s["true_alpha"],
+            "theta_pred_low_deg": out["nn_prediction"]["low"]["theta"],
+            "alpha_pred_low_deg": out["nn_prediction"]["low"]["alpha"],
+            "theta_pred_high_deg": out["nn_prediction"]["high"]["theta"],
+            "alpha_pred_high_deg": out["nn_prediction"]["high"]["alpha"],
+            "chosen_converged": int(converged),
             "chosen_mode": "" if chosen is None else chosen["mode"],
-            "theta_chosen_deg": np.nan if chosen is None else float(chosen["theta"]),
-            "alpha_chosen_deg": np.nan if chosen is None else float(chosen["alpha"]),
-            "chosen_err_3d": np.nan if chosen is None else float(chosen["err_3d"]),
+            "theta_chosen_deg": np.nan if chosen is None else chosen["theta"],
+            "alpha_chosen_deg": np.nan if chosen is None else chosen["alpha"],
+            "err_3d": err,
         })
-        if chosen is None:
-            continue
 
-        reachable_count += 1
-        preds_theta.append(float(chosen["theta"]))
-        preds_alpha.append(float(chosen["alpha"]))
-        trues_theta.append(float(row["theta_deg"]))
-        trues_alpha.append(float(row["alpha_deg"]))
+    errs_arr = np.array(errs)
+    n_total = len(samples)
 
-    mae_theta = float(np.mean(np.abs(np.array(preds_theta) - np.array(trues_theta)))) if preds_theta else float("nan")
-    mae_alpha = float(np.mean(np.abs(np.array(preds_alpha) - np.array(trues_alpha)))) if preds_alpha else float("nan")
-    pd.DataFrame(rows).to_csv(verify_csv_path, index=False, encoding="utf-8-sig")
-    pd.DataFrame([{
-        "sample_size": int(sample_n),
-        "reachable_count": int(reachable_count),
-        "angle_mae_theta_deg": mae_theta,
-        "angle_mae_alpha_deg": mae_alpha,
-    }]).to_csv(summary_csv_path, index=False, encoding="utf-8-sig")
-    return {
-        "sample_size": int(sample_n),
-        "reachable_count": int(reachable_count),
-        "angle_mae_theta_deg": mae_theta,
-        "angle_mae_alpha_deg": mae_alpha,
+    result = {
+        "sample_size": int(n_total),
+        "converged_count": int(converged_count),
+        "convergence_rate": float(converged_count / max(n_total, 1)),
+        "err_3d_median": float(np.median(errs_arr)) if len(errs_arr) else float("nan"),
+        "err_3d_mean": float(np.mean(errs_arr)) if len(errs_arr) else float("nan"),
+        "err_3d_p95": float(np.percentile(errs_arr, 95)) if len(errs_arr) else float("nan"),
         "verify_csv_path": verify_csv_path,
         "summary_csv_path": summary_csv_path,
     }
+
+    pd.DataFrame(rows).to_csv(verify_csv_path, index=False, encoding="utf-8-sig")
+    pd.DataFrame([result]).to_csv(summary_csv_path, index=False, encoding="utf-8-sig")
+    return result
 
 
 def full_pipeline_dual_task(seed=42, out_dir=None, rebuild_dataset=False):

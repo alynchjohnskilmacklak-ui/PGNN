@@ -38,7 +38,7 @@ def load_branch_model(
     device: Optional[str] = None,
     in_dim: int = 14,
     hidden: int = 256,
-    dropout: float = 0.10,
+    dropout: float = 0.15,
 ):
     if not os.path.isabs(model_path):
         model_path = os.path.join(BASE_DIR, model_path)
@@ -327,6 +327,82 @@ def _newton_raphson_3d_refine(
             break
 
     return best_sol
+
+
+def _newton_only_refine(
+    th_guess: float,
+    alpha_guess: float,
+    x_target: float,
+    y_target: float,
+    z_target: float,
+    params_env: ProjectileParams,
+    th_min: float,
+    th_max: float,
+    dt: float = 0.05,
+    t_max: float = 120.0,
+    alpha_min: float = -ALPHA_ABS_MAX,
+    alpha_max: float = ALPHA_ABS_MAX,
+    y_tol: float = 2.0,
+    z_tol: float = 2.0,
+    max_iter: int = 15,
+    dth: float = 0.05,
+    dal: float = 0.05,
+):
+    th = float(np.clip(th_guess, th_min, th_max))
+    al = float(np.clip(alpha_guess, alpha_min, alpha_max))
+    best = None
+    iters = 0
+
+    for _ in range(max_iter):
+        iters += 1
+        base = _score_angle_at_target(th, al, x_target, y_target, z_target, params_env, dt, t_max)
+        if base is None:
+            break
+        if best is None or base["err_3d"] < best["err_3d"]:
+            best = dict(base)
+
+        E_y = base["y_hit"] - y_target
+        E_z = base["z_hit"] - z_target
+        if abs(E_y) < y_tol and abs(E_z) < z_tol:
+            break
+
+        th_p = _score_angle_at_target(th + dth, al, x_target, y_target, z_target, params_env, dt, t_max)
+        th_m = _score_angle_at_target(th - dth, al, x_target, y_target, z_target, params_env, dt, t_max)
+        al_p = _score_angle_at_target(th, al + dal, x_target, y_target, z_target, params_env, dt, t_max)
+        al_m = _score_angle_at_target(th, al - dal, x_target, y_target, z_target, params_env, dt, t_max)
+        if None in (th_p, th_m, al_p, al_m):
+            break
+
+        J = np.array([
+            [(th_p["y_hit"] - th_m["y_hit"]) / (2 * dth), (al_p["y_hit"] - al_m["y_hit"]) / (2 * dal)],
+            [(th_p["z_hit"] - th_m["z_hit"]) / (2 * dth), (al_p["z_hit"] - al_m["z_hit"]) / (2 * dal)],
+        ], dtype=np.float64)
+        rhs = np.array([E_y, E_z], dtype=np.float64)
+        try:
+            delta = np.linalg.solve(J, rhs)
+        except np.linalg.LinAlgError:
+            delta = np.linalg.lstsq(J, rhs, rcond=None)[0]
+
+        d_th = float(np.clip(delta[0], -2.0, 2.0))
+        d_al = float(np.clip(delta[1], -2.0, 2.0))
+
+        accepted = False
+        for scale in (1.0, 0.5, 0.25, 0.1):
+            cand_th = float(np.clip(th - scale * d_th, th_min, th_max))
+            cand_al = float(np.clip(al - scale * d_al, alpha_min, alpha_max))
+            cand = _score_angle_at_target(cand_th, cand_al, x_target, y_target, z_target, params_env, dt, t_max)
+            if cand is None:
+                continue
+            if best is None or cand["err_3d"] <= best["err_3d"] + 1e-6:
+                th, al = cand_th, cand_al
+                if cand["err_3d"] < best["err_3d"]:
+                    best = dict(cand)
+                accepted = True
+                break
+        if not accepted:
+            break
+
+    return best, iters
 
 
 def _refine_candidate(
@@ -622,6 +698,8 @@ def solve_target_unified(
     z_tol: float = 2.0,
     dt: float = 0.05,
     t_max: float = 120.0,
+    use_grid: bool = False,
+    grid_fallback: bool = True,
     save_plot: bool = True,
     plot_path: str | None = None,
 ):
@@ -677,35 +755,52 @@ def solve_target_unified(
     low_nn_traj = None if low_nn_score is None else low_nn_score["trajectory"]
     high_nn_traj = None if high_nn_score is None else high_nn_score["trajectory"]
 
-    low_sol = _refine_candidate(
-        th_guess=th_low_pred,
-        alpha_guess=al_low_pred,
-        x_target=x_target,
-        y_target=y_target,
-        z_target=z_target,
-        params_env=params_env,
-        dt=dt,
-        t_max=t_max,
-        th_min=LOW_THETA_MIN,
-        th_max=LOW_THETA_MAX,
-        y_tol=y_tol,
-        z_tol=z_tol,
-    )
-
-    high_sol = _refine_candidate(
-        th_guess=th_high_pred,
-        alpha_guess=al_high_pred,
-        x_target=x_target,
-        y_target=y_target,
-        z_target=z_target,
-        params_env=params_env,
-        dt=dt,
-        t_max=t_max,
-        th_min=HIGH_THETA_MIN,
-        th_max=HIGH_THETA_MAX,
-        y_tol=y_tol,
-        z_tol=z_tol,
-    )
+    if use_grid:
+        low_sol = _refine_candidate(
+            th_guess=th_low_pred, alpha_guess=al_low_pred,
+            x_target=x_target, y_target=y_target, z_target=z_target,
+            params_env=params_env, dt=dt, t_max=t_max,
+            th_min=LOW_THETA_MIN, th_max=LOW_THETA_MAX,
+            y_tol=y_tol, z_tol=z_tol,
+        )
+        high_sol = _refine_candidate(
+            th_guess=th_high_pred, alpha_guess=al_high_pred,
+            x_target=x_target, y_target=y_target, z_target=z_target,
+            params_env=params_env, dt=dt, t_max=t_max,
+            th_min=HIGH_THETA_MIN, th_max=HIGH_THETA_MAX,
+            y_tol=y_tol, z_tol=z_tol,
+        )
+    else:
+        low_sol, _ = _newton_only_refine(
+            th_low_pred, al_low_pred,
+            x_target, y_target, z_target, params_env,
+            LOW_THETA_MIN, LOW_THETA_MAX,
+            dt=dt, t_max=t_max, y_tol=y_tol, z_tol=z_tol,
+        )
+        high_sol, _ = _newton_only_refine(
+            th_high_pred, al_high_pred,
+            x_target, y_target, z_target, params_env,
+            HIGH_THETA_MIN, HIGH_THETA_MAX,
+            dt=dt, t_max=t_max, y_tol=y_tol, z_tol=z_tol,
+        )
+        if grid_fallback:
+            tol = max(y_tol, z_tol)
+            if low_sol is None or low_sol["err_3d"] > tol:
+                low_sol = _refine_candidate(
+                    th_guess=th_low_pred, alpha_guess=al_low_pred,
+                    x_target=x_target, y_target=y_target, z_target=z_target,
+                    params_env=params_env, dt=dt, t_max=t_max,
+                    th_min=LOW_THETA_MIN, th_max=LOW_THETA_MAX,
+                    y_tol=y_tol, z_tol=z_tol,
+                )
+            if high_sol is None or high_sol["err_3d"] > tol:
+                high_sol = _refine_candidate(
+                    th_guess=th_high_pred, alpha_guess=al_high_pred,
+                    x_target=x_target, y_target=y_target, z_target=z_target,
+                    params_env=params_env, dt=dt, t_max=t_max,
+                    th_min=HIGH_THETA_MIN, th_max=HIGH_THETA_MAX,
+                    y_tol=y_tol, z_tol=z_tol,
+                )
 
     def _valid(sol):
         return sol is not None and sol["y_err"] <= y_tol and sol["z_err"] <= z_tol

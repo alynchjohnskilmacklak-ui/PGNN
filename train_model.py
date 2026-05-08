@@ -19,6 +19,11 @@ HIGH_THETA_MIN = 45.0
 HIGH_THETA_MAX = 85.0
 ALPHA_ABS_MAX = 15.0
 
+try:
+    from generate_dataset import COLUMN_INDEX
+except ImportError:
+    COLUMN_INDEX = {}
+
 
 class AngleDataset(Dataset):
     def __init__(self, X: np.ndarray, y: np.ndarray):
@@ -535,11 +540,12 @@ def train(
     if cfg.trajectory_mode not in (0, 1):
         raise ValueError("trajectory_mode must be 0 (low) or 1 (high).")
 
-    theta_col = arr[:, -1]
+    in_low_col = COLUMN_INDEX["in_low_branch"]
+    in_high_col = COLUMN_INDEX["in_high_branch"]
     if cfg.trajectory_mode == 0:
-        mode_mask = theta_col <= LOW_THETA_MAX
+        mode_mask = arr[:, in_low_col] == 1.0
     else:
-        mode_mask = theta_col >= HIGH_THETA_MIN
+        mode_mask = arr[:, in_high_col] == 1.0
     arr = arr[mode_mask]
     mode_name = "low" if cfg.trajectory_mode == 0 else "high"
     print(f"Trajectory mode: {mode_name} ({cfg.trajectory_mode})")
@@ -551,7 +557,7 @@ def train(
     y_alpha = arr[:, -2:-1]
     y = np.concatenate([y_theta, y_alpha], axis=1)
 
-    X = np.delete(arr[:, :-2], 11, axis=1)
+    X = np.delete(arr[:, :-2], [in_low_col, in_high_col], axis=1)
     print(f"Feature dim: {X.shape[1]}, Label dim: {y.shape[1]}")
 
     group_ids, _ = build_trajectory_groups(arr)

@@ -93,7 +93,11 @@ def get_dynamic_wind(current_alt: float, params: ProjectileParams):
     h_above_ground = max(current_alt - params.alt_gun, z0 + 0.01)
     scale = np.log(h_above_ground / z0) / np.log(h_ref / z0)
     scale = max(0.0, min(scale, 5.0))
-    return params.wind_x * scale, params.wind_y * scale, params.wind_z * scale
+    return (
+        params.wind_x * scale,
+        params.wind_y,
+        params.wind_z * scale,
+    )
 
 
 def dynamics(state: np.ndarray, params: ProjectileParams) -> np.ndarray:
@@ -303,7 +307,7 @@ def simulate_trajectory(
         y_list.append(state_next[1])
         z_list.append(state_next[2])
 
-        if t > 0 and state_next[1] <= 0.0:
+        if state_next[1] <= 0.0:
             y_prev, y_now = state[1], state_next[1]
             if (y_prev - y_now) != 0:
                 frac = y_prev / (y_prev - y_now)
@@ -343,7 +347,7 @@ def interpolate_yz_on_xgrid(traj: dict, x_grid: np.ndarray):
         raise ValueError("x_grid must be 1D array.")
 
     inc_mask = np.ones_like(x, dtype=bool)
-    inc_mask[1:] = x[1:] >= x[:-1]
+    inc_mask[1:] = x[1:] > x[:-1]
     x_m, y_m, z_m = x[inc_mask], y[inc_mask], z[inc_mask]
 
     if len(x_m) < 2:
