@@ -1,0 +1,37 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "1. 生成数据集",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/generate_dataset.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "2. 训练模型 (Low)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_model.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "3. 预测推理",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/predict.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "4. 完整流水线",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
