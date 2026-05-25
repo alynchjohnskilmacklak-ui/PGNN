@@ -1,0 +1,24 @@
+﻿
+Name                          Length LastWriteTime     
+----                          ------ -------------     
+.gitignore                       296 2026/5/8 12:42:16 
+.mcp.json                       1057 2026/5/12 21:40:25
+ARCHIVE_MANIFEST.txt               0 2026/5/14 22:53:37
+ballistics.py                  13267 2026/5/14 22:52:46
+Benchmark.py                   40191 2026/5/14 22:52:48
+generate_dataset.py            10504 2026/5/14 22:52:50
+GIT_STATUS.txt                   389 2026/5/14 22:53:37
+main.py                        14029 2026/5/14 22:42:13
+model_architecture.py           9392 2026/5/14 21:30:58
+physics_loss.py                 6725 2026/5/14 14:08:40
+predict.py                     22439 2026/5/13 22:23:33
+README.md                       9715 2026/5/13 22:34:51
+run_hybrid_seed_sweep.py        4792 2026/5/14 22:42:36
+run_model_type_sweep.py         4599 2026/5/14 22:42:36
+run_pgnn_lambda_seed_sweep.py   5179 2026/5/14 22:42:36
+run_pgnn_noise_sweep.py         4999 2026/5/14 22:42:36
+run_pgnn_steps_sweep.py         2970 2026/5/14 9:59:59 
+solver.py                      10915 2026/5/13 22:18:15
+train_model.py                 36703 2026/5/14 22:42:05
+
+

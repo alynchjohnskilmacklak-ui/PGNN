@@ -3,9 +3,9 @@ import json
 import numpy as np
 import pandas as pd
 
-from generate_dataset import generate_dataset, AMMO_CONFIGS, CURRENT_AMMO, get_ammo_config
+from generate_dataset import generate_dataset, AMMO_CONFIGS, CURRENT_AMMO
 from train_model import train
-from predict import load_branch_model, solve_target_unified
+from predict import load_branch_model, solve_target_unified, infer_model_dims_from_state_dict
 from ballistics import ProjectileParams, get_atmosphere, isa_pressure, simulate_trajectory, time_and_y_at_x
 
 
@@ -40,7 +40,6 @@ TRAIN_HIDDEN = 256
 TRAIN_DROPOUT = 0.15
 TRAIN_MODEL_TYPE = "kan_mlp"
 TRAIN_LAMBDA_PHYS = 0.004
-TRAIN_PHYSICS_LOSS_MODE = "consistency"
 TRAIN_PHYSICS_STEPS = 6
 TRAIN_GPU_CACHE_MAX_TOTAL_FRAC = 0.45
 TRAIN_GPU_CACHE_MAX_FREE_FRAC = 0.65
@@ -148,13 +147,17 @@ def _verify_unified_model(out_dir, sample_n=500, seed=99999):
             "note": "model files missing",
         }
 
+    low_dims = infer_model_dims_from_state_dict(low_model_path)
+    high_dims = infer_model_dims_from_state_dict(high_model_path)
     loaded_low_model, loaded_low_scaler, _ = load_branch_model(
         low_model_path, low_scaler_path,
         theta_min=0.0, theta_max=55.0,
+        in_dim=low_dims["in_dim"], hidden=low_dims["hidden"], dropout=low_dims["dropout"],
     )
     loaded_high_model, loaded_high_scaler, _ = load_branch_model(
         high_model_path, high_scaler_path,
         theta_min=45.0, theta_max=85.0,
+        in_dim=high_dims["in_dim"], hidden=high_dims["hidden"], dropout=high_dims["dropout"],
     )
 
     meta_path = os.path.join(out_dir, "dataset_meta.json")
@@ -240,10 +243,9 @@ def _verify_unified_model(out_dir, sample_n=500, seed=99999):
     return result
 
 
-def full_pipeline_dual_task(seed=42, out_dir=None, rebuild_dataset=False, ammo_id: str | None = None):
-    ammo_id, ammo_cfg = get_ammo_config(ammo_id)
+def full_pipeline_dual_task(seed=42, out_dir=None, rebuild_dataset=False):
     if out_dir is None:
-        out_dir = ammo_cfg["out_dir"]
+        out_dir = AMMO_CONFIGS[CURRENT_AMMO]["out_dir"]
 
     if rebuild_dataset and os.path.isdir(out_dir):
         removed_files = _remove_pipeline_outputs(out_dir)
@@ -262,7 +264,6 @@ def full_pipeline_dual_task(seed=42, out_dir=None, rebuild_dataset=False, ammo_i
     else:
         ds_info = generate_dataset(
             out_dir=out_dir,
-            ammo_id=ammo_id,
             seed=seed,
             theta_max=75,
             theta_step=1.0,
@@ -296,7 +297,6 @@ def full_pipeline_dual_task(seed=42, out_dir=None, rebuild_dataset=False, ammo_i
         dropout=TRAIN_DROPOUT,
         model_type=TRAIN_MODEL_TYPE,
         lambda_phys=TRAIN_LAMBDA_PHYS,
-        physics_loss_mode=TRAIN_PHYSICS_LOSS_MODE,
         physics_steps=TRAIN_PHYSICS_STEPS,
         gpu_cache_max_total_frac=TRAIN_GPU_CACHE_MAX_TOTAL_FRAC,
         gpu_cache_max_free_frac=TRAIN_GPU_CACHE_MAX_FREE_FRAC,
@@ -319,7 +319,6 @@ def full_pipeline_dual_task(seed=42, out_dir=None, rebuild_dataset=False, ammo_i
         dropout=TRAIN_DROPOUT,
         model_type=TRAIN_MODEL_TYPE,
         lambda_phys=TRAIN_LAMBDA_PHYS,
-        physics_loss_mode=TRAIN_PHYSICS_LOSS_MODE,
         physics_steps=TRAIN_PHYSICS_STEPS,
         gpu_cache_max_total_frac=TRAIN_GPU_CACHE_MAX_TOTAL_FRAC,
         gpu_cache_max_free_frac=TRAIN_GPU_CACHE_MAX_FREE_FRAC,

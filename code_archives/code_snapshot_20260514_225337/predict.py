@@ -11,11 +11,11 @@ import torch.nn as nn
 
 from ballistics import ProjectileParams, simulate_trajectory, time_and_y_at_x
 from model_architecture import (
+    SingleBranchDNN,
     LOW_THETA_MIN,
     LOW_THETA_MAX,
     HIGH_THETA_MIN,
     HIGH_THETA_MAX,
-    build_single_branch_model,
 )
 from train_model import minmax_transform
 from solver import (
@@ -23,7 +23,6 @@ from solver import (
     _newton_only_refine,
     _refine_candidate,
 )
-from feature_schema import build_inference_input
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -35,13 +34,6 @@ def load_scaler(scaler_path: str) -> dict:
         return json.load(f)
 
 
-def _load_model_file(model_path: str, map_location):
-    obj = torch.load(model_path, map_location=map_location)
-    if isinstance(obj, dict) and "state_dict" in obj and "model_config" in obj:
-        return obj["state_dict"], dict(obj["model_config"])
-    return obj, infer_model_dims_from_state_dict(model_path)
-
-
 def load_branch_model(
     model_path: str,
     scaler_path: str,
@@ -51,8 +43,6 @@ def load_branch_model(
     in_dim: int = 14,
     hidden: int = 256,
     dropout: float = 0.15,
-    model_type: str | None = None,
-    verbose: bool = True,
 ):
     if not os.path.isabs(model_path):
         model_path = os.path.join(BASE_DIR, model_path)
@@ -60,79 +50,31 @@ def load_branch_model(
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     scaler = load_scaler(scaler_path)
-    state, metadata = _load_model_file(model_path, map_location=device)
-    model_type = str(model_type or metadata.get("model_type", "mlp"))
-    in_dim = int(metadata.get("in_dim", in_dim))
-    hidden = int(metadata.get("hidden", hidden))
-    dropout = float(metadata.get("dropout", dropout))
-    theta_min = float(metadata.get("theta_min", theta_min))
-    theta_max = float(metadata.get("theta_max", theta_max))
-
-    model = build_single_branch_model(
-        model_type=model_type,
+    model = SingleBranchDNN(
         in_dim=in_dim,
         hidden=hidden,
         dropout=dropout,
         theta_min=theta_min,
         theta_max=theta_max,
     ).to(device)
+    state = torch.load(model_path, map_location=device)
     model.load_state_dict(state)
     model.eval()
-    loaded_config = {
-        "model_type": model_type,
-        "in_dim": in_dim,
-        "hidden": hidden,
-        "dropout": dropout,
-        "theta_min": theta_min,
-        "theta_max": theta_max,
-    }
-    model._ballistics_model_config = loaded_config
-    if verbose:
-        print(f"Loaded model: {os.path.basename(model_path)} {loaded_config} device={device}")
     return model, scaler, device
 
 
 def infer_model_dims_from_state_dict(model_path: str) -> dict:
     if not os.path.isabs(model_path):
         model_path = os.path.join(BASE_DIR, model_path)
-    obj = torch.load(model_path, map_location="cpu")
-    if isinstance(obj, dict) and "state_dict" in obj and "model_config" in obj:
-        cfg = dict(obj["model_config"])
-        return {
-            "model_type": str(cfg.get("model_type", "mlp")),
-            "in_dim": int(cfg["in_dim"]),
-            "hidden": int(cfg["hidden"]),
-            "dropout": float(cfg.get("dropout", 0.0)),
-            "theta_min": float(cfg.get("theta_min", LOW_THETA_MIN)),
-            "theta_max": float(cfg.get("theta_max", LOW_THETA_MAX)),
-        }
-
-    state = obj
-    if "stem.0.weight" in state:
-        stem_weight = state["stem.0.weight"]
-        return {
-            "model_type": "mlp",
-            "in_dim": int(stem_weight.shape[1]),
-            "hidden": int(stem_weight.shape[0]),
-            "dropout": 0.0,
-        }
-    if "stem.0.base_weight" in state:
-        stem_weight = state["stem.0.base_weight"]
-        return {
-            "model_type": "kan_mlp",
-            "in_dim": int(stem_weight.shape[1]),
-            "hidden": int(stem_weight.shape[0]),
-            "dropout": 0.0,
-        }
-    if "layers.0.base_weight" in state:
-        layer_weight = state["layers.0.base_weight"]
-        return {
-            "model_type": "kan",
-            "in_dim": int(layer_weight.shape[1]),
-            "hidden": int(layer_weight.shape[0]),
-            "dropout": 0.0,
-        }
-    raise KeyError(f"Cannot infer model architecture from checkpoint keys in {model_path!r}.")
+    state = torch.load(model_path, map_location="cpu")
+    stem_weight = state["stem.0.weight"]
+    head0_weight = state["head.mlp.0.weight"]
+    return {
+        "in_dim": int(stem_weight.shape[1]),
+        "hidden": int(stem_weight.shape[0]),
+        "dropout": 0.0,
+        "head_hidden": int(head0_weight.shape[0]),
+    }
 
 
 def _predict_branch_angles(
@@ -419,12 +361,13 @@ def solve_target_unified(
         cant_angle, T_powder_C,
         alt_gun, T0_C, P0_Pa,
     )
-    X_in = build_inference_input(
-        x_target=x_target, y_target=y_target, z_target=z_target,
-        v0_actual=v0_actual, rho=rho,
-        wind_x=wind_x, wind_y=wind_y, wind_z=wind_z,
-        cant_angle=cant_angle, T_powder_C=T_powder_C,
-        T0_C=T0_C, P0_Pa=P0_Pa, alt_gun=alt_gun,
+    slant_range = float(np.sqrt(x_target ** 2 + y_target ** 2 + z_target ** 2))
+
+    X_in = np.array(
+        [[x_target, y_target, z_target, v0_actual, rho, slant_range,
+          wind_x, wind_y, wind_z, cant_angle, T_powder_C,
+          T0_C, P0_Pa, alt_gun]],
+        dtype=np.float32,
     )
 
     if loaded_low_model is not None and loaded_low_scaler is not None:

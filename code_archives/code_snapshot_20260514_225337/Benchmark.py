@@ -107,7 +107,11 @@ import predict  # noqa: E402
 # 它在自己模块名空间里有了 simulate_trajectory 绑定，也替换它
 predict.simulate_trajectory = _counted_simulate
 
-from predict import load_branch_model, solve_target_unified  # noqa: E402
+from predict import (  # noqa: E402
+    infer_model_dims_from_state_dict,
+    load_branch_model,
+    solve_target_unified,
+)
 from model_architecture import (  # noqa: E402
     HIGH_THETA_MAX,
     HIGH_THETA_MIN,
@@ -117,7 +121,6 @@ from model_architecture import (  # noqa: E402
 from train_model import (  # noqa: E402
     minmax_transform,
 )
-from feature_schema import build_inference_input  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -477,12 +480,18 @@ def nn_predict_both(
     """
     import torch
 
-    X_in = build_inference_input(
-        x_target=sample["x_target"], y_target=sample["y_target"], z_target=sample["z_target"],
-        v0_actual=sample["v0_actual"], rho=sample["rho"],
-        wind_x=sample["wind_x"], wind_y=sample["wind_y"], wind_z=sample["wind_z"],
-        cant_angle=sample["cant_angle"], T_powder_C=sample["T_powder_C"],
-        T0_C=sample["T0_C"], P0_Pa=sample["P0_Pa"], alt_gun=sample["alt_gun"],
+    slant = math.sqrt(
+        sample["x_target"] ** 2 + sample["y_target"] ** 2 + sample["z_target"] ** 2
+    )
+    X_in = np.array(
+        [[
+            sample["x_target"], sample["y_target"], sample["z_target"],
+            sample["v0_actual"], sample["rho"], slant,
+            sample["wind_x"], sample["wind_y"], sample["wind_z"],
+            sample["cant_angle"], sample["T_powder_C"],
+            sample["T0_C"], sample["P0_Pa"], sample["alt_gun"],
+        ]],
+        dtype=np.float32,
     )
 
     with torch.no_grad():
@@ -705,13 +714,17 @@ def run_benchmark(
         if all(os.path.exists(p) for p in (low_pt, high_pt, low_js, high_js)):
             print("[NN] 加载模型...")
             try:
+                ld = infer_model_dims_from_state_dict(low_pt)
+                hd = infer_model_dims_from_state_dict(high_pt)
                 loaded["low_m"], loaded["low_s"], _ = load_branch_model(
                     low_pt, low_js,
                     theta_min=LOW_THETA_MIN, theta_max=LOW_THETA_MAX,
+                    in_dim=ld["in_dim"], hidden=ld["hidden"], dropout=ld["dropout"],
                 )
                 loaded["high_m"], loaded["high_s"], _ = load_branch_model(
                     high_pt, high_js,
                     theta_min=HIGH_THETA_MIN, theta_max=HIGH_THETA_MAX,
+                    in_dim=hd["in_dim"], hidden=hd["hidden"], dropout=hd["dropout"],
                 )
                 has_nn = True
                 print("[NN] OK\n")

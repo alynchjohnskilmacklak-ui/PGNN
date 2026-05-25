@@ -28,11 +28,16 @@ from physics_loss import (
     _forward_loss_dict,
 )
 
-from generate_dataset import CURRENT_AMMO  # noqa: E402
-from feature_schema import COLUMN_INDEX, FEATURE_COLS, LABEL_COLS, TRAINING_FEATURE_COLS, training_feature_idx
-
-
-MODEL_CHECKPOINT_VERSION = 2
+try:
+    from generate_dataset import COLUMN_INDEX
+except ImportError:
+    _FEATURE_COLS = [
+        "x", "y", "z", "v0_actual", "rho", "slant_range",
+        "wind_x", "wind_y", "wind_z", "cant_angle", "T_powder_C",
+        "in_low_branch", "in_high_branch", "T0_C", "P0_Pa", "alt_gun",
+    ]
+    _LABEL_COLS = ["alpha_deg", "theta_deg"]
+    COLUMN_INDEX = {name: i for i, name in enumerate(_FEATURE_COLS + _LABEL_COLS)}
 
 
 class AngleDataset(Dataset):
@@ -58,38 +63,6 @@ def minmax_transform(X: np.ndarray, scaler: dict) -> np.ndarray:
     xmin = np.array(scaler["xmin"], dtype=np.float32)
     span = np.array(scaler["span"], dtype=np.float32)
     return (X - xmin) / span
-
-
-def _training_feature_cols() -> list[str]:
-    return list(TRAINING_FEATURE_COLS)
-
-
-def _make_model_checkpoint(
-    model: nn.Module,
-    cfg: "TrainConfig",
-    in_dim: int,
-    theta_min: float,
-    theta_max: float,
-) -> dict:
-    return {
-        "checkpoint_version": MODEL_CHECKPOINT_VERSION,
-        "state_dict": model.state_dict(),
-        "model_config": {
-            "model_type": cfg.model_type,
-            "in_dim": int(in_dim),
-            "hidden": int(cfg.hidden),
-            "dropout": float(cfg.dropout),
-            "theta_min": float(theta_min),
-            "theta_max": float(theta_max),
-            "trajectory_mode": int(cfg.trajectory_mode),
-            "physics_loss_mode": cfg.physics_loss_mode,
-        },
-        "data_config": {
-            "ammo_type": CURRENT_AMMO,
-            "feature_cols": _training_feature_cols(),
-            "label_cols": ["theta_deg", "alpha_deg"],
-        },
-    }
 
 
 def build_trajectory_groups(arr: np.ndarray, round_decimals: int = 4):
@@ -316,7 +289,6 @@ class TrainConfig:
     device: Optional[str] = None
     plot_losses: bool = True
     lambda_phys: float = 0.0025
-    physics_loss_mode: str = "consistency"
     trajectory_mode: int = 0
     physics_steps: int = 6
     cache_data_on_gpu: bool = True
@@ -397,6 +369,12 @@ def _make_grad_scaler(use_cuda: bool):
         return torch.cuda.amp.GradScaler(enabled=use_cuda)
 
 
+def _feature_col_after_branch_drop(name: str) -> int:
+    raw_idx = COLUMN_INDEX[name]
+    dropped = int(COLUMN_INDEX["in_low_branch"] < raw_idx) + int(COLUMN_INDEX["in_high_branch"] < raw_idx)
+    return raw_idx - dropped
+
+
 def _add_gaussian_noise(rng: np.random.Generator, values: np.ndarray, std: float) -> np.ndarray:
     if float(std) <= 0.0:
         return values
@@ -422,10 +400,10 @@ def _apply_train_noise(X_train: np.ndarray, y_train: np.ndarray, cfg: TrainConfi
         "train_noise_alpha_std": float(cfg.train_noise_alpha_std),
     }
 
-    x_col = training_feature_idx("x")
-    y_col = training_feature_idx("y")
-    z_col = training_feature_idx("z")
-    slant_col = training_feature_idx("slant_range")
+    x_col = _feature_col_after_branch_drop("x")
+    y_col = _feature_col_after_branch_drop("y")
+    z_col = _feature_col_after_branch_drop("z")
+    slant_col = _feature_col_after_branch_drop("slant_range")
 
     if cfg.train_noise_x_rel_std > 0.0:
         scale = np.maximum(np.abs(Xn[:, x_col:x_col + 1]), 1.0)
@@ -440,12 +418,12 @@ def _apply_train_noise(X_train: np.ndarray, y_train: np.ndarray, cfg: TrainConfi
         Xn[:, x_col] ** 2 + Xn[:, y_col] ** 2 + Xn[:, z_col] ** 2
     ).astype(np.float32)
 
-    v0_col = training_feature_idx("v0_actual")
-    rho_col = training_feature_idx("rho")
-    wind_x_col = training_feature_idx("wind_x")
-    wind_y_col = training_feature_idx("wind_y")
-    wind_z_col = training_feature_idx("wind_z")
-    cant_col = training_feature_idx("cant_angle")
+    v0_col = _feature_col_after_branch_drop("v0_actual")
+    rho_col = _feature_col_after_branch_drop("rho")
+    wind_x_col = _feature_col_after_branch_drop("wind_x")
+    wind_y_col = _feature_col_after_branch_drop("wind_y")
+    wind_z_col = _feature_col_after_branch_drop("wind_z")
+    cant_col = _feature_col_after_branch_drop("cant_angle")
 
     Xn[:, v0_col:v0_col + 1] = _add_gaussian_noise(rng, Xn[:, v0_col:v0_col + 1], cfg.train_noise_v0_std)
     Xn[:, v0_col:v0_col + 1] = np.maximum(Xn[:, v0_col:v0_col + 1], 1.0)
@@ -488,7 +466,6 @@ def train(
     device: Optional[str] = None,
     plot_losses: bool = True,
     lambda_phys: float = 0.0025,
-    physics_loss_mode: str = "consistency",
     trajectory_mode: int = 0,
     physics_steps: int = 6,
     cache_data_on_gpu: bool = True,
@@ -526,7 +503,6 @@ def train(
         device=device,
         plot_losses=plot_losses,
         lambda_phys=lambda_phys,
-        physics_loss_mode=str(physics_loss_mode),
         trajectory_mode=int(trajectory_mode),
         physics_steps=int(physics_steps),
         cache_data_on_gpu=cache_data_on_gpu,
@@ -593,16 +569,6 @@ def train(
     mask_val = np.isin(group_ids, split["val_groups"])
     mask_test = np.isin(group_ids, split["test_groups"])
     print(f"Samples -> Train: {mask_train.sum()}, Val: {mask_val.sum()}, Test: {mask_test.sum()}")
-    split_counts = {
-        "train": int(mask_train.sum()),
-        "val": int(mask_val.sum()),
-        "test": int(mask_test.sum()),
-    }
-    if min(split_counts.values()) <= 0:
-        raise RuntimeError(
-            "Train/val/test split produced an empty partition: "
-            f"{split_counts}. Increase dataset size or adjust split ratios."
-        )
 
     train_noise = _apply_train_noise(X[mask_train], y[mask_train], cfg)
     X_train_raw = train_noise["X_train"]
@@ -671,14 +637,8 @@ def train(
     print(f"Model type: {cfg.model_type}")
     ema = ModelEMA(model, decay=0.999)
     mass, caliber = _read_ammo_meta(cfg.out_dir)
-    phys_engine = SmoothPhysicsLoss(
-        mass=mass,
-        caliber=caliber,
-        steps=cfg.physics_steps,
-        loss_mode=cfg.physics_loss_mode,
-    ).to(cfg.device)
+    phys_engine = SmoothPhysicsLoss(mass=mass, caliber=caliber, steps=cfg.physics_steps).to(cfg.device)
     print(f"Physics loss steps: {cfg.physics_steps}")
-    print(f"Physics loss mode: {cfg.physics_loss_mode}")
 
     xmin_tensor = torch.tensor(scaler["xmin"], dtype=torch.float32, device=cfg.device)
     span_tensor = torch.tensor(scaler["span"], dtype=torch.float32, device=cfg.device)
@@ -715,7 +675,6 @@ def train(
         "best_val_phys_loss": None,
         "trajectory_mode": int(cfg.trajectory_mode),
         "model_type": cfg.model_type,
-        "physics_loss_mode": cfg.physics_loss_mode,
         "noise": train_noise["summary"],
     }
 
@@ -906,14 +865,7 @@ def train(
     history_csv_path = os.path.join(cfg.out_dir, f"{cfg.history_name}.csv")
     plot_path = os.path.join(cfg.out_dir, f"{cfg.plot_name}.png")
 
-    checkpoint = _make_model_checkpoint(
-        model=model,
-        cfg=cfg,
-        in_dim=X.shape[1],
-        theta_min=theta_min,
-        theta_max=theta_max,
-    )
-    torch.save(checkpoint, model_path)
+    torch.save(model.state_dict(), model_path)
     with open(scaler_path, "w", encoding="utf-8") as f:
         json.dump(scaler, f, ensure_ascii=False, indent=2)
     with open(history_path, "w", encoding="utf-8") as f:

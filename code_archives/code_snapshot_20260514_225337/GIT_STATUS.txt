@@ -1,0 +1,18 @@
+﻿ M Benchmark.py
+ M ballistics.py
+ M generate_dataset.py
+ M main.py
+ M predict.py
+ M train_model.py
+?? .claude/
+?? README.md
+?? code_archives/
+?? everything-claude-code/
+?? model_architecture.py
+?? physics_loss.py
+?? run_hybrid_seed_sweep.py
+?? run_model_type_sweep.py
+?? run_pgnn_lambda_seed_sweep.py
+?? run_pgnn_noise_sweep.py
+?? run_pgnn_steps_sweep.py
+?? solver.py

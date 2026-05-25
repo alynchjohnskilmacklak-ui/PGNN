@@ -14,7 +14,11 @@ from ballistics import (
     isa_pressure,
 )
 from model_architecture import LOW_THETA_MAX, HIGH_THETA_MIN
-from feature_schema import FEATURE_COLS, LABEL_COLS, COLUMN_INDEX
+
+# =========================================================
+# 药温耦合工具
+# =========================================================
+
 
 # =========================================================
 # 🎯 武器库配置区
@@ -36,12 +40,13 @@ AMMO_CONFIGS = {
 
 CURRENT_AMMO = "12.7mm_B32"
 
-
-def get_ammo_config(ammo_id: str | None = None) -> tuple[str, dict]:
-    ammo_id = CURRENT_AMMO if ammo_id is None else str(ammo_id)
-    if ammo_id not in AMMO_CONFIGS:
-        raise KeyError(f"Unknown ammo_id {ammo_id!r}. Available: {sorted(AMMO_CONFIGS)}")
-    return ammo_id, AMMO_CONFIGS[ammo_id]
+FEATURE_COLS = [
+    "x", "y", "z", "v0_actual", "rho", "slant_range",
+    "wind_x", "wind_y", "wind_z", "cant_angle", "T_powder_C",
+    "in_low_branch", "in_high_branch", "T0_C", "P0_Pa", "alt_gun",
+]
+LABEL_COLS = ["alpha_deg", "theta_deg"]
+COLUMN_INDEX = {name: i for i, name in enumerate(FEATURE_COLS + LABEL_COLS)}
 
 
 def _stratified_alt_samples(rng: np.random.Generator, alt_range, n_samples: int, alt_bins: int):
@@ -86,7 +91,6 @@ def _process_single_angle_worker(args):
 
         T0_C  = float(rng.uniform(T0_C_range[0],  T0_C_range[1]))
         P0_Pa = float(isa_pressure(alt_m) * rng.uniform(0.95, 1.05))
-        P0_Pa = float(np.clip(P0_Pa, float(P0_Pa_range[0]), float(P0_Pa_range[1])))
 
         T_powder = T0_C + float(rng.normal(0, 5.0))
 
@@ -131,7 +135,6 @@ def _process_single_angle_worker(args):
 
 def generate_dataset(
         out_dir: str | None = None,
-        ammo_id: str | None = None,
         theta_min: int = 0,
         theta_max: int = 75,
         theta_step: float = 1.0,
@@ -153,7 +156,7 @@ def generate_dataset(
         P0_Pa_range=(60000.0, 105000.0),
         seed: int = 42,
 ) -> dict:
-    ammo_id, cfg = get_ammo_config(ammo_id)
+    cfg = AMMO_CONFIGS[CURRENT_AMMO]
     if out_dir is None: out_dir = cfg["out_dir"]
     v0_base = cfg["v0_base"]
 
@@ -163,7 +166,7 @@ def generate_dataset(
     thetas = _build_theta_list(theta_min, theta_max, theta_step)
     trajectories, ranges = [], []
 
-    print(f"🚀 准备生成 3D 实战级 [{ammo_id}] 弹道数据: 共 {len(thetas)} 个角度...")
+    print(f"🚀 准备生成 3D 实战级 [{CURRENT_AMMO}] 弹道数据: 共 {len(thetas)} 个角度...")
 
     worker_args = []
     for i, th in enumerate(thetas):
@@ -176,7 +179,6 @@ def generate_dataset(
         worker_args.append(args)
 
     completed_count = 0
-    failed_angles = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, os.cpu_count() // 2)) as executor:
         future_to_th = {executor.submit(_process_single_angle_worker, arg): arg[0] for arg in worker_args}
         for future in concurrent.futures.as_completed(future_to_th):
@@ -189,15 +191,7 @@ def generate_dataset(
                 if completed_count % 5 == 0 or completed_count == len(thetas):
                     print(f"✅ 进度: {completed_count}/{len(thetas)}")
             except Exception as exc:
-                failed_angles.append({"theta_deg": float(th_val), "error": str(exc)})
                 print(f"❌ 角度 {th_val:.1f}° 产生异常: {exc}")
-
-    if failed_angles:
-        failed_preview = failed_angles[:5]
-        raise RuntimeError(
-            f"Dataset generation failed for {len(failed_angles)}/{len(thetas)} angles. "
-            f"First failures: {failed_preview}"
-        )
 
     max_range = float(np.max(ranges)) if ranges else 0.0
     if max_range <= 0: raise RuntimeError("Max range <= 0. Check parameters.")
@@ -248,8 +242,6 @@ def generate_dataset(
 
     cols = FEATURE_COLS + LABEL_COLS
     df = pd.DataFrame(rows, columns=cols)
-    if df.empty:
-        raise RuntimeError("Dataset generation produced zero rows after interpolation/filtering.")
     df = df.sort_values(by=["theta_deg", "alpha_deg", "v0_actual", "x"],
                         kind="mergesort").reset_index(drop=True)
 
@@ -262,7 +254,7 @@ def generate_dataset(
     np.save(npy_path, df[cols].to_numpy(dtype=np.float32))
 
     meta = {
-        "ammo_type":        ammo_id,
+        "ammo_type":        CURRENT_AMMO,
         "mass_kg":          cfg["mass"],
         "caliber_m":        cfg["caliber"],
         "v0_base":          float(v0_base),
@@ -270,8 +262,6 @@ def generate_dataset(
         "num_samples":      int(len(df)),
         "samples_per_angle":int(samples_per_angle),
         "alpha_range_deg":  list(alpha_range),
-        "P0_Pa_range":      list(P0_Pa_range),
-        "failed_angles":    failed_angles,
         "note": "3D Unified dataset with wind_z, cant_angle, T_powder, and alpha_deg label."
     }
     with open(meta_path, "w", encoding="utf-8") as f:

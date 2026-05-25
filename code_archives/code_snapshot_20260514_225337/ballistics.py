@@ -21,7 +21,6 @@ g0 = 9.80665
 
 
 T_TROPOPAUSE = 216.15
-ALPHA_ABS_MAX = 15.0
 
 
 def get_atmosphere(current_alt: float, alt_gun: float, T0_K: float, P0_pa: float):
@@ -372,27 +371,25 @@ def interpolate_yz_on_xgrid(traj: dict, x_grid: np.ndarray):
 def time_and_y_at_x(traj: dict, x_target: float):
     x, y, z, t = traj["x"], traj["y"], traj["z"], traj["t"]
 
-    if len(x) == 0:
+    if x_target < x[0] or x_target > x[-1] + 1e-9:
         return None, None, None
-    if abs(float(x_target) - float(x[0])) <= 1e-9:
+
+    idx = np.searchsorted(x, x_target, side="left")
+    if idx == 0:
         return float(t[0]), float(y[0]), float(z[0])
+    if idx >= len(x):
+        return None, None, None
 
-    for idx in range(1, len(x)):
-        x0, x1 = x[idx - 1], x[idx]
-        if not ((x0 <= x_target <= x1) or (x1 <= x_target <= x0)):
-            continue
+    x0, x1 = x[idx - 1], x[idx]
+    t0, t1 = t[idx - 1], t[idx]
+    y0, y1 = y[idx - 1], y[idx]
+    z0, z1 = z[idx - 1], z[idx]
 
-        t0, t1 = t[idx - 1], t[idx]
-        y0, y1 = y[idx - 1], y[idx]
-        z0, z1 = z[idx - 1], z[idx]
+    if abs(x1 - x0) < 1e-12:
+        return float(t1), float(y1), float(z1)
 
-        if abs(x1 - x0) < 1e-12:
-            return float(t1), float(y1), float(z1)
-
-        alpha = (x_target - x0) / (x1 - x0)
-        t_hit = t0 + alpha * (t1 - t0)
-        y_hit = y0 + alpha * (y1 - y0)
-        z_hit = z0 + alpha * (z1 - z0)
-        return float(t_hit), float(y_hit), float(z_hit)
-
-    return None, None, None
+    alpha = (x_target - x0) / (x1 - x0)
+    t_hit = t0 + alpha * (t1 - t0)
+    y_hit = y0 + alpha * (y1 - y0)
+    z_hit = z0 + alpha * (z1 - z0)
+    return float(t_hit), float(y_hit), float(z_hit)

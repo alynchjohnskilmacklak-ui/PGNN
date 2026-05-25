@@ -28,6 +28,3 @@ artifacts_debug/
 .codex_tmp_lib/
 codex/
 .ipynb_checkpoints/
-
-# Embedded repos
-everything-claude-code/
