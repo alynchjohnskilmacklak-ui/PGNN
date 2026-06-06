@@ -1,3 +1,28 @@
+"""
+用途：
+    PGNN 噪声配置模块。定义输入噪声（INPUT_NOISE）和标签噪声（LABEL_NOISE）参数，
+    供 run_pgnn_lambda_seed_sweep.py 等其他扫描脚本导入使用。
+
+适用场景：
+    被其他扫描脚本 import，一般不直接运行。
+
+输入：
+    无特殊输入依赖。
+
+输出：
+    仅导出噪声配置字典，不生成文件。
+
+运行方式：
+    python scripts/experiments/run_pgnn_noise_sweep.py（直接运行仅打印配置）
+"""
+
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import csv
 import json
 import os

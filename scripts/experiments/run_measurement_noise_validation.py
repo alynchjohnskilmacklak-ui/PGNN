@@ -1,3 +1,28 @@
+"""
+用途：
+    测量噪声鲁棒性验证。在测试输入上添加仿真的测量噪声（位置、速度、风场等），
+    评估 NN+solver 在真实噪声条件下的命中精度。
+
+适用场景：
+    评估系统对传感器测量误差的容忍度。
+
+输入：
+    需要已训练好的模型（.pt 文件）和归一化器（scaler JSON）。
+
+输出：
+    噪声条件下的命中误差统计 CSV。
+
+运行方式：
+    python scripts/experiments/run_measurement_noise_validation.py --n 200
+"""
+
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import argparse
 import csv
 import json

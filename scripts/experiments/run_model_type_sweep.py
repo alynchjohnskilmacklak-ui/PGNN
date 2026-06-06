@@ -1,3 +1,27 @@
+"""
+用途：
+    模型类型扫描实验。对比 MLP、KAN、KAN-MLP 三种网络结构在固定 seed 下的训练效果。
+
+适用场景：
+    选择最佳网络结构。
+
+输入：
+    需要先运行 generate_dataset.py 生成数据集。
+
+输出：
+    各模型类型的训练历史 CSV。
+
+运行方式：
+    python scripts/experiments/run_model_type_sweep.py
+"""
+
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import csv
 import json
 import os

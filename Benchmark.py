@@ -557,6 +557,9 @@ def method_C(
         "converged": chosen is not None,
         "chosen_theta": chosen["theta"] if chosen else np.nan,
         "chosen_alpha": chosen["alpha"] if chosen else np.nan,
+        "refine_source": chosen.get("refine_source", "unknown") if chosen else "unknown",
+        "used_grid": chosen.get("used_grid", np.nan) if chosen else np.nan,
+        "refine_iters": chosen.get("refine_iters", np.nan) if chosen else np.nan,
     }
 
 
@@ -803,11 +806,24 @@ def summarize_and_save(df: pd.DataFrame, out_dir: str, has_nn: bool):
             "n_sim_median": float(sub["n_sim"].median()),
             "wall_ms_mean": float(sub["wall_ms"].mean()),
             "wall_ms_median": float(sub["wall_ms"].median()),
+            "used_grid_rate": float(sub["used_grid"].mean()) if "used_grid" in sub.columns else float("nan"),
+            "refine_iters_mean": float(sub["refine_iters"].mean()) if "refine_iters" in sub.columns else float("nan"),
+            "refine_iters_median": float(sub["refine_iters"].median()) if "refine_iters" in sub.columns else float("nan"),
+            "refine_iters_max": float(sub["refine_iters"].max()) if "refine_iters" in sub.columns else float("nan"),
         }
         rows_summary.append(row)
 
     summary_df = pd.DataFrame(rows_summary)
     print(summary_df.to_string(index=False))
+
+    # —— refine_source 分布（仅 C） ——
+    if has_nn and "refine_source" in df.columns:
+        c_sub = df[df["method"] == "C"]
+        if len(c_sub) > 0:
+            print("\n  Method C refine_source distribution:")
+            src_counts = c_sub["refine_source"].value_counts()
+            for src, cnt in src_counts.items():
+                print(f"    {src}: {cnt} ({cnt / max(len(c_sub), 1):.1%})")
 
     # —— 写出 CSV ——
     detail_csv = os.path.join(out_dir, "benchmark_detail.csv")

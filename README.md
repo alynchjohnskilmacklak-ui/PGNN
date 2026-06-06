@@ -11,11 +11,12 @@ ballistics.py          ← 物理引擎（大气、弹道仿真）
 model_architecture.py  ← 神经网络结构定义
 physics_loss.py        ← 可微物理损失函数
 train_model.py         ← 数据预处理 + 训练循环
-solver.py              ← 数值求解器（网格搜索 + 牛顿法）
+solver.py              ← 数值求解器（Broyden 快速路径 + grid 回退）
 predict.py             ← 推理预测 + 结果可视化
 generate_dataset.py    ← 合成数据集生成
 main.py                ← 顶层流水线（数据集→训练→验证）
 Benchmark.py           ← 独立对照实验（5种方法性能对比）
+benchmark_newton_vs_broyden_solver.py ← Newton vs Broyden 求解器离线对比
 ```
 
 ---
@@ -102,17 +103,16 @@ Benchmark.py           ← 独立对照实验（5种方法性能对比）
 
 ### 5. `solver.py` — 数值求解器
 
-从 NN 初值出发，用传统数值方法精修角度，使弹道精确命中目标。
+从 NN 初值出发，用 Broyden 拟牛顿法快速精修角度；若精度不足则回退到 grid search 再精修。
 
 | 函数 | 功能 |
 |------|------|
 | `_score_angle_at_target` | 给定 (theta, alpha)，正向仿真弹道，返回 3D 命中误差 |
-| `_central_jacobian` | 中心差分 Jacobian：衡量 θ/α 变化对落点 (y, z) 的影响 |
 | `_grid_search_refine` | 网格搜索：在初值周围搜索更优角度 |
 | `_coarse_to_fine_refine` | 两级网格搜索：粗搜索 (±2°, 步长 0.5°) → 精搜索 (±0.5°, 步长 0.1°) |
-| `_newton_raphson_3d_refine` | 3D 牛顿-拉夫逊迭代：Jacobian 求逆 → 自适应步长 → 最多 15 次迭代 |
-| `_newton_only_refine` | 简化牛顿法：独立计算 Jacobian，每步 4 次仿真验证，返回 (解, 迭代次数) |
-| `_refine_candidate` | 混合策略：先网格搜索获得良好初值 → 再牛顿法精修 |
+| `_newton_only_refine` | 牛顿法精修（备用/对照）：中心差分 Jacobian，每轮 5 次仿真，最多 15 次迭代 |
+| `_broyden_refine` | **Broyden 拟牛顿精修**：首轮中心差分 Jacobian，后续 good Broyden rank-1 更新，减少仿真次数 |
+| `_refine_candidate` | **自适应策略**：NN 初值 → Broyden 快速精修 → 满足容差直接返回 → 不满足则 grid search → grid 结果再 Broyden → 选误差最小者 |
 
 ---
 
@@ -188,6 +188,38 @@ Benchmark.py           ← 独立对照实验（5种方法性能对比）
 
 ---
 
+### 10. `benchmark_newton_vs_broyden_solver.py` — Newton vs Broyden 离线对比
+
+独立 benchmark 脚本，不依赖 NN 模型，对比两种迭代方法在相同初值下的性能。
+
+| 方法 | 策略 |
+|------|------|
+| **Newton** | 每轮中心差分 Jacobian（5 次仿真/轮），复刻 `solver._newton_only_refine()` |
+| **Broyden** | 首轮中心差分 Jacobian，后续 good Broyden rank-1 更新（不增加仿真） |
+
+| 函数 | 功能 |
+|------|------|
+| `SimCounter` | 仿真调用计数器 |
+| `counted_score_angle_at_target` | 带计数的角度评分（每调用一次 `simulate_trajectory` 递增） |
+| `benchmark_newton_refine` | Newton 精修（带完整计数统计） |
+| `benchmark_broyden_refine` | Broyden 精修（带完整计数统计） |
+| `RefineResult` | 统一结果 dataclass（含 method/sample_id/converged/err_3d/wall_ms/simulate_calls 等） |
+| `generate_benchmark_samples` | 正向仿真生成独立测试样本（不依赖训练数据） |
+| `build_params_from_sample` | 从样本字典构造 `ProjectileParams` |
+| `run_benchmark` | 主流程：生成样本 → Newton/Broyden 对比 → 汇总 DataFrame |
+| `print_summary` | 按 method 分组输出收敛率、误差、仿真次数等汇总统计 |
+
+输出文件：
+- `benchmark_newton_vs_broyden_solver.csv` — 逐样本详细结果
+- `benchmark_newton_vs_broyden_summary.csv` — 按方法汇总
+
+命令行：
+```bash
+python benchmark_newton_vs_broyden_solver.py --n_samples 100 --seed 20260606
+```
+
+---
+
 ## 执行流程
 
 ```
@@ -214,3 +246,25 @@ main.full_pipeline_dual_task()
 - PyTorch (CUDA 可选)
 - NumPy, Pandas, Matplotlib
 - 无需额外深度学习框架
+
+---
+
+## 项目文件结构与脚本说明
+
+核心代码仍在根目录（`ballistics.py` / `solver.py` / `model_architecture.py` 等），非核心脚本已整理到 `scripts/` 子目录：
+
+```
+scripts/
+├── benchmarks/     ← 求解器 benchmark、消融实验
+├── experiments/    ← 参数扫描、噪声验证等训练实验
+├── pipeline/       ← 流程脚本（暂空）
+├── debug/          ← 调试脚本（暂空）
+└── legacy/         ← 旧脚本（暂空）
+```
+
+根目录保留了 `benchmark_newton_vs_broyden_solver.py` 和 `ablation_refine_strategy.py` 作为兼容入口（wrapper），推荐使用 `scripts/benchmarks/` 下的实际脚本。
+
+详细文档：
+- 脚本索引：`docs/SCRIPT_INDEX.md`
+- 代码地图：`docs/CODE_MAP.md`
+- 运行手册：`docs/RUNBOOK.md`

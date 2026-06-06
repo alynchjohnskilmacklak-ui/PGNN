@@ -1,3 +1,28 @@
+"""
+用途：
+    PGNN 物理步数扫描实验。在固定 lambda_phys 下对比不同 physics rollout steps
+    对训练精度的影响。
+
+适用场景：
+    确定最佳 physics_steps 参数（计算成本 vs 物理精度权衡）。
+
+输入：
+    需要先运行 generate_dataset.py 生成数据集。
+
+输出：
+    各 steps 配置的训练结果 CSV。
+
+运行方式：
+    python scripts/experiments/run_pgnn_steps_sweep.py
+"""
+
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import csv
 import json
 import os

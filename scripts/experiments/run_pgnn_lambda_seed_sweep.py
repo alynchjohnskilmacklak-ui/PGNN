@@ -1,25 +1,61 @@
+"""
+用途：
+    PGNN lambda 参数 + seed 联合扫描。在不同 lambda_phys 值和随机种子下训练，
+    评估物理损失权重对精度的影响。
+
+适用场景：
+    确定最佳 lambda_phys 超参数。
+
+输入：
+    需要先运行 generate_dataset.py 生成数据集。
+    依赖 scripts/experiments/run_pgnn_noise_sweep.py 中的 LABEL_NOISE。
+
+输出：
+    各 lambda/seed 组合的训练结果 CSV。
+
+运行方式：
+    python scripts/experiments/run_pgnn_lambda_seed_sweep.py
+"""
+
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import csv
 import json
 import os
-import time
 from typing import Iterable
 
 from generate_dataset import AMMO_CONFIGS, CURRENT_AMMO
+from scripts.experiments.run_pgnn_noise_sweep import LABEL_NOISE
 from train_model import train
 
 
 DEFAULT_SEEDS = [42, 123, 2026]
+DEFAULT_LAMBDAS = [0.0, 0.004, 0.008, 0.015, 0.03]
 
 
 def default_configs() -> list[dict]:
-    return [
-        {"name": "mlp_data_only", "model_type": "mlp", "lambda_phys": 0.0},
-        {"name": "kan_mlp_data_only", "model_type": "kan_mlp", "lambda_phys": 0.0},
-        {"name": "kan_mlp_pgnn", "model_type": "kan_mlp", "lambda_phys": 0.004},
-    ]
+    configs = []
+    for scenario, noise in [
+        ("clean", {}),
+        ("label_noise", LABEL_NOISE),
+    ]:
+        for lambda_phys in DEFAULT_LAMBDAS:
+            method = "data_only" if float(lambda_phys) == 0.0 else f"pgnn_lam{_lambda_tag(lambda_phys)}"
+            configs.append({
+                "scenario": scenario,
+                "method": method,
+                "lambda_phys": float(lambda_phys),
+                "noise": dict(noise),
+            })
+    return configs
 
 
-def run_hybrid_seed_sweep(
+def run_lambda_seed_sweep(
     configs: Iterable[dict] | None = None,
     seeds: Iterable[int] = DEFAULT_SEEDS,
     out_dir: str | None = None,
@@ -40,24 +76,24 @@ def run_hybrid_seed_sweep(
 
     mode_name = "low" if int(trajectory_mode) == 0 else "high"
     results = []
-    json_path = os.path.join(out_dir, f"hybrid_seed_sweep_{mode_name}.json")
-    csv_path = os.path.join(out_dir, f"hybrid_seed_sweep_{mode_name}.csv")
+    json_path = os.path.join(out_dir, f"pgnn_lambda_seed_sweep_{mode_name}.json")
+    csv_path = os.path.join(out_dir, f"pgnn_lambda_seed_sweep_{mode_name}.csv")
 
     for seed in seeds:
         for cfg in configs:
-            name = str(cfg["name"])
-            model_type = str(cfg["model_type"])
+            scenario = str(cfg["scenario"])
+            method = str(cfg["method"])
             lambda_phys = float(cfg["lambda_phys"])
-            run_name = f"hybridseed_{name}_{mode_name}_seed{int(seed)}"
+            noise = dict(cfg.get("noise", {}))
+            run_name = f"lambda_seed_{scenario}_{method}_seed{int(seed)}_{mode_name}"
 
             print("=" * 80)
             print(
-                f"Running hybrid seed sweep: name={name}, model_type={model_type}, "
+                f"Running lambda/seed sweep: scenario={scenario}, method={method}, "
                 f"seed={int(seed)}, mode={mode_name}, lambda_phys={lambda_phys}"
             )
             print("=" * 80)
 
-            start = time.perf_counter()
             history = train(
                 out_dir=out_dir,
                 dataset_npy=dataset_npy,
@@ -72,19 +108,18 @@ def run_hybrid_seed_sweep(
                 patience=patience,
                 hidden=256,
                 dropout=0.15,
-                model_type=model_type,
                 lambda_phys=lambda_phys,
                 physics_steps=physics_steps,
                 plot_losses=False,
                 gpu_cache_max_total_frac=0.45,
                 gpu_cache_max_free_frac=0.65,
                 trajectory_mode=trajectory_mode,
+                **noise,
             )
-            elapsed_sec = time.perf_counter() - start
 
             row = {
-                "name": name,
-                "model_type": model_type,
+                "scenario": scenario,
+                "method": method,
                 "seed": int(seed),
                 "trajectory_mode": int(trajectory_mode),
                 "mode": mode_name,
@@ -93,7 +128,6 @@ def run_hybrid_seed_sweep(
                 "batch_size": int(batch_size),
                 "max_epochs": int(max_epochs),
                 "patience": int(patience),
-                "elapsed_sec": float(elapsed_sec),
                 "best_epoch": history["best_epoch"],
                 "best_val_loss": history["best_val_loss"],
                 "best_val_data_loss": history.get("best_val_data_loss"),
@@ -107,10 +141,15 @@ def run_hybrid_seed_sweep(
                 "history_csv": os.path.join(out_dir, f"hist_{run_name}.csv"),
                 "model_path": os.path.join(out_dir, f"{run_name}.pt"),
             }
+            row.update(history.get("noise", {}))
             results.append(row)
             _save_results(results, json_path, csv_path)
 
     return results
+
+
+def _lambda_tag(value: float) -> str:
+    return f"{float(value):.4f}".rstrip("0").rstrip(".").replace(".", "p")
 
 
 def _save_results(rows: list[dict], json_path: str, csv_path: str) -> None:
@@ -123,9 +162,9 @@ def _save_results(rows: list[dict], json_path: str, csv_path: str) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"Saved hybrid seed sweep results: {csv_path}")
-    print(f"Saved hybrid seed sweep results: {json_path}")
+    print(f"Saved lambda/seed sweep results: {csv_path}")
+    print(f"Saved lambda/seed sweep results: {json_path}")
 
 
 if __name__ == "__main__":
-    run_hybrid_seed_sweep()
+    run_lambda_seed_sweep()
